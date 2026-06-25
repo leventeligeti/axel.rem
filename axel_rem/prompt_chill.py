@@ -18,10 +18,10 @@ from axel_rem.embedder import embed, embed_batch
 
 log = logging.getLogger(__name__)
 
-POLL_INTERVAL = 30       # másodperc — signal esetén azonnal felébred
-SEED_BATCH    = 10       # seed-ek per kör
-MSG_BATCH     = 5        # üzenetek per kör — kisebb, hogy ne öljük a proxyt
-LLM_DELAY_SEC = 1.0      # LLM hívások közötti szünet (üzenet feldolgozásnál)
+POLL_INTERVAL = 60       # másodperc — signal esetén azonnal felébred
+SEED_BATCH    = 5        # seed-ek per kör
+MSG_BATCH     = 2        # üzenetek per kör — Groq 30 RPM limit miatt
+LLM_DELAY_SEC = 4.0      # LLM hívások közötti szünet (~2 RPM üzenetből)
 
 
 class PromptChill:
