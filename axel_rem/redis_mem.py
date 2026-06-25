@@ -40,11 +40,13 @@ def push_memory(agent: str, mem_id: int, entity: str,
     try:
         r = _client()
         key = _key(agent, entity)
+        import datetime as _dt
         value = json.dumps({
             "id": mem_id,
             "entity": entity,
             "fact": fact[:300],
             "strength": round(strength, 3),
+            "created_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d"),
         })
         score = time.time() + strength  # erősebb = magasabb score
         r.zadd(key, {value: score})

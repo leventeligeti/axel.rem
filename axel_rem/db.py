@@ -49,7 +49,11 @@ def seed_update(mem_id: int, entity: str, fact: str, tags: list[str],
 
 def memory_search_vector(embedding: list[float], agent: str | None,
                          k: int = 10) -> list[dict]:
-    """Szemantikus keresés pgvector cosine similarity alapján."""
+    """Idosullyozott szemantikus kereses: ujabb es erosebb memoriak elore kerulnek.
+    
+    Score = cosine_distance + 0.02 * days_old
+    Azonos tema eseten az ujabb teny rangsora jobb lesz a reginel.
+    """
     with db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             if agent:
@@ -59,7 +63,9 @@ def memory_search_vector(embedding: list[float], agent: str | None,
                               1 - (embedding <=> %s::vector) AS similarity
                        FROM axel_rem_memory
                        WHERE extracted = TRUE AND embedding IS NOT NULL AND agent = %s
-                       ORDER BY embedding <=> %s::vector
+                       ORDER BY
+                         (embedding <=> %s::vector)
+                         + (EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0 * 0.02)
                        LIMIT %s""",
                     (embedding, agent.upper(), embedding, k),
                 )
@@ -70,7 +76,9 @@ def memory_search_vector(embedding: list[float], agent: str | None,
                               1 - (embedding <=> %s::vector) AS similarity
                        FROM axel_rem_memory
                        WHERE extracted = TRUE AND embedding IS NOT NULL
-                       ORDER BY embedding <=> %s::vector
+                       ORDER BY
+                         (embedding <=> %s::vector)
+                         + (EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0 * 0.02)
                        LIMIT %s""",
                     (embedding, embedding, k),
                 )
