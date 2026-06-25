@@ -1,4 +1,4 @@
-"""axel.rem belépési pont — prompt-chill + dream scheduler + task worker."""
+"""axel.rem belépési pont — API server + prompt-chill + dream scheduler + task worker."""
 import logging
 import sys
 import threading
@@ -11,10 +11,15 @@ logging.basicConfig(
 from axel_rem.prompt_chill import PromptChill
 from axel_rem.dream import DreamScheduler
 from axel_rem.agent import RemAgent
+from axel_rem.api import start_api_server
 
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
+
+    # API server mindig indul (signal + recall végpontok)
+    if mode in ("all", "chill", "worker", "dream"):
+        start_api_server()
 
     if mode in ("all", "chill"):
         t_chill = threading.Thread(
@@ -32,7 +37,6 @@ def main():
     if mode in ("all", "dream"):
         DreamScheduler().run()  # blokkoló — scheduler loop
     elif mode in ("chill", "worker"):
-        # Ha dream nem fut, maradunk alive amíg a daemon threadek élnek
         import time
         while True:
             time.sleep(60)

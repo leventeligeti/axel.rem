@@ -2,11 +2,12 @@
 Dream agent — éjjeli REM feldolgozás.
 Fut: minden nap 03:00-kor.
 Feladata:
-  1. Napi memóriák összegyűjtése agent-enként
-  2. LLM-alapú konszolidáció (duplikátok, minták)
-  3. Strength decay
-  4. Fontos memóriák boost-ja
-  5. Long-term promóció — konszolidált új sor + embedding
+  1. axel_task (rem_processed=FALSE) + axel_message (rem_processed=FALSE) összegyűjtése
+  2. axel_rem_memory legfrissebb soraival kombinálva
+  3. LLM-alapú konszolidáció (duplikátok, minták)
+  4. Strength decay
+  5. Fontos memóriák boost-ja
+  6. Long-term promóció — konszolidált új sor + embedding
 """
 import json
 import logging
@@ -23,9 +24,9 @@ log = logging.getLogger(__name__)
 
 AGENTS = ["AXEL", "FORGE", "ATLAS"]
 DREAM_HOUR = 3  # 03:00 UTC
-PROMOTE_MIN_IMPORTANCE = 6   # LLM importance >= ennyi → long-term promóció
-PROMOTE_STRENGTH = 2.5       # promótált sor induló strength-je
-PROMOTE_DEDUP_HOURS = 20     # ennyi órán belüli dream-sor ugyanarra az entity-re nem duplikálódik
+PROMOTE_MIN_IMPORTANCE = 6
+PROMOTE_STRENGTH = 2.5
+PROMOTE_DEDUP_HOURS = 20
 
 
 class DreamScheduler:
@@ -56,14 +57,15 @@ class DreamScheduler:
         log.info("[DREAM] Ciklus kész — %d long-term promóció", promoted_total)
 
     def _consolidate_agent(self, agent: str) -> int:
+        # 1. Már feldolgozott memóriák (axel_rem_memory)
         memories = db.memory_get_recent(agent=agent, hours=26, limit=80)
-        raw_tasks = db.tasks_get_recent(agent=agent, hours=26, limit=60)
 
-        # Task ID-k amihez már van memória sor — ne duplikáljuk
+        # 2. Feldolgozatlan task-ok (axel_task rem_processed=FALSE)
+        raw_tasks = db.tasks_get_unprocessed(agent=agent, limit=80)
+        task_ids_processed: list[int] = []
+
         seen_refs = {m.get("source_ref") for m in memories}
-
-        # Konvertál task sorokat pseudo-memória dikt-té, ha még nincs feldolgozva
-        appended = 0
+        task_appended = 0
         for t in raw_tasks:
             ref = f"task://{t['id']}"
             if ref not in seen_refs:
@@ -78,13 +80,41 @@ class DreamScheduler:
                     "tags": [],
                     "created_at": t["finished_at"],
                 })
-                appended += 1
+                task_appended += 1
+            task_ids_processed.append(t["id"])
+
+        # 3. Feldolgozatlan üzenetek (axel_message rem_processed=FALSE) — csak AXEL-nél
+        msg_ids_processed: list[int] = []
+        msg_appended = 0
+        if agent == "AXEL":
+            raw_msgs = db.messages_get_unprocessed(limit=100)
+            for msg in raw_msgs:
+                ref = f"msg://{msg['id']}"
+                if ref not in seen_refs:
+                    title = msg.get("title") or ""
+                    body = msg.get("body") or ""
+                    fact = f"{title} {body}".strip()[:300]
+                    memories.append({
+                        "id": None,
+                        "entity": None,
+                        "fact": fact,
+                        "chunk": body[:600],
+                        "source_type": "message",
+                        "source_ref": ref,
+                        "strength": 1.0,
+                        "tags": [],
+                        "created_at": msg["created_at"],
+                    })
+                    msg_appended += 1
+                msg_ids_processed.append(msg["id"])
 
         if not memories:
             return 0
 
-        log.info("[DREAM] %s: %d elem konszolidáció (%d memória + %d nyers task)",
-                 agent, len(memories), len(memories) - appended, appended)
+        log.info("[DREAM] %s: %d elem (%d memória, %d task, %d üzenet)",
+                 agent, len(memories),
+                 len(memories) - task_appended - msg_appended,
+                 task_appended, msg_appended)
 
         by_entity: dict[str, list[dict]] = {}
         for m in memories:
@@ -97,6 +127,11 @@ class DreamScheduler:
                 continue
             if self._process_cluster(agent, entity, mems):
                 promoted += 1
+
+        # Feldolgozottnak jelöljük a forrás sorokat
+        db.tasks_mark_processed_bulk(task_ids_processed)
+        db.messages_mark_processed_bulk(msg_ids_processed)
+
         return promoted
 
     def _process_cluster(self, agent: str, entity: str, mems: list[dict]) -> bool:
@@ -139,7 +174,7 @@ CSAK a JSON listát add vissza."""
 
                 if importance >= 7:
                     for m in mems[:3]:
-                        if m.get("id"):  # nyers task soroknak nincs id-juk
+                        if m.get("id"):
                             db.memory_boost(m["id"], delta=float(importance) * 0.05)
 
                 if importance >= PROMOTE_MIN_IMPORTANCE and fact:
@@ -155,22 +190,15 @@ CSAK a JSON listát add vissza."""
 
     def _promote_to_longterm(self, agent: str, entity: str, fact: str,
                              importance: int, source_mems: list[dict]) -> bool:
-        """
-        Long-term memória sor létrehozása.
-        Visszaad False-t ha már van friss dream-sor erre az entity-re.
-        """
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         source_ref = f"dream://{today}/{entity.lower().replace(' ', '_')}"
 
-        # Dedup: ha már van friss dream-sor erre az entity+agent párra, kihagyjuk
         if db.dream_memory_exists(agent, entity, hours=PROMOTE_DEDUP_HOURS):
             log.debug("[DREAM] Dedup: %s/%s már van — kihagyva", agent, entity)
             return False
 
-        # Chunk: az összes eredeti fact összefűzve kontextusnak
         chunk = " | ".join(m["fact"] for m in source_mems[:5] if m.get("fact"))
 
-        # Embedding generálás
         embedding = None
         try:
             from axel_rem.embedder import embed
@@ -178,7 +206,6 @@ CSAK a JSON listát add vissza."""
         except Exception as e:
             log.warning("[DREAM] Embedding hiba [%s/%s]: %s", agent, entity, e)
 
-        # Tags az eredeti memóriákból összegyűjtve
         tags: list[str] = []
         for m in source_mems:
             for t in (m.get("tags") or []):
@@ -197,7 +224,6 @@ CSAK a JSON listát add vissza."""
             tags=tags,
         )
 
-        # Redis frissítés
         if entity:
             redis_mem.push_memory(
                 agent=agent,
