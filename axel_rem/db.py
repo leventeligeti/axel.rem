@@ -139,3 +139,64 @@ def memory_get_by_entity(entity: str, agent: str | None = None,
                     (f"%{entity}%", limit),
                 )
             return [dict(r) for r in cur.fetchall()]
+
+
+def dream_memory_exists(agent: str, entity: str, hours: int = 20) -> bool:
+    """Ellenőrzi van-e már friss dream-promótált sor erre az entity+agent párra."""
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT 1 FROM axel_rem_memory
+                   WHERE agent = %s AND entity ILIKE %s
+                     AND source_type = 'dream'
+                     AND created_at >= NOW() - make_interval(hours => %s)
+                   LIMIT 1""",
+                (agent.upper(), entity, hours),
+            )
+            return cur.fetchone() is not None
+
+
+def longterm_insert(entity: str, fact: str, chunk: str, source_ref: str,
+                    agent: str, strength: float, embedding: list[float] | None,
+                    tags: list[str]) -> int:
+    """Long-term konszolidált memória sor létrehozása, visszaadja az új id-t."""
+    with db() as conn:
+        with conn.cursor() as cur:
+            if embedding:
+                cur.execute(
+                    """INSERT INTO axel_rem_memory
+                       (entity, fact, chunk, source_type, source_ref, agent,
+                        strength, embedding, tags, extracted)
+                       VALUES (%s, %s, %s, 'dream', %s, %s, %s, %s::vector, %s, TRUE)
+                       RETURNING id""",
+                    (entity, fact, chunk, source_ref, agent.upper(),
+                     strength, embedding, tags),
+                )
+            else:
+                cur.execute(
+                    """INSERT INTO axel_rem_memory
+                       (entity, fact, chunk, source_type, source_ref, agent,
+                        strength, tags, extracted)
+                       VALUES (%s, %s, %s, 'dream', %s, %s, %s, %s, TRUE)
+                       RETURNING id""",
+                    (entity, fact, chunk, source_ref, agent.upper(),
+                     strength, tags),
+                )
+            return cur.fetchone()[0]
+
+
+
+def tasks_get_recent(agent: str, hours: int = 26, limit: int = 60) -> list[dict]:
+    """Kozvetlenul az axel_task tablabol olvassa az elmult N ora befejezett taskjait."""
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT id, description, result_summary, finished_at
+                   FROM axel_task
+                   WHERE assigned_agent = %s AND status = 'DONE'
+                     AND finished_at >= NOW() - make_interval(hours => %s)
+                   ORDER BY finished_at DESC
+                   LIMIT %s""",
+                (agent.upper(), hours, limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
