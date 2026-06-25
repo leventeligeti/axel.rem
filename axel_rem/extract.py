@@ -57,6 +57,7 @@ def extract_entity_fact(description: str, summary: str) -> dict:
             "entity": str(data.get("entity", ""))[:200],
             "fact":   str(data.get("fact",   description[:150]))[:500],
             "tags":   [str(t) for t in data.get("tags", [])][:4],
+            "llm_ok": True,
         }
     except Exception as e:
         log.warning("[EXTRACT] LLM hiba: %s — fallback", e)
@@ -64,4 +65,5 @@ def extract_entity_fact(description: str, summary: str) -> dict:
             "entity": "",
             "fact":   description[:150],
             "tags":   [],
+            "llm_ok": False,
         }
