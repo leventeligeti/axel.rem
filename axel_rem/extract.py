@@ -40,7 +40,7 @@ def extract_entity_fact(description: str, summary: str) -> dict:
             f"{config.LLM_URL}/v1/chat/completions",
             headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
             json={
-                "model": "groq-llama",
+                "model": config.LLM_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
                 "max_tokens": 200,
