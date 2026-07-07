@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import psycopg2.extras
 
-from axel_shared.db import db
+from axel_rem.connection import db
 
 log = logging.getLogger(__name__)
 

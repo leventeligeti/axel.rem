@@ -16,14 +16,14 @@ from datetime import datetime, timezone
 
 import httpx
 
-from axel_shared import config
+from axel_rem import config
 from axel_rem import db
 from axel_rem import redis_mem
 
 log = logging.getLogger(__name__)
 
-AGENTS = ["AXEL", "FORGE", "ATLAS"]
-DREAM_HOUR = 3  # 03:00 UTC
+AGENTS = config.AGENTS
+DREAM_HOUR = config.DREAM_HOUR
 PROMOTE_MIN_IMPORTANCE = 6
 PROMOTE_STRENGTH = 2.5
 PROMOTE_DEDUP_HOURS = 20

@@ -5,10 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "axel-rem"
 version = "0.1.0"
-description = "REM — memory engine: prompt-chill + dream agent"
+description = "Multi-agent semantic memory engine — prompt-chill pipeline + nightly dream consolidation"
 requires-python = ">=3.11"
 dependencies = [
-    "axel-shared",
     "sentence-transformers>=2.7",
     "redis>=5.0",
     "psycopg2-binary>=2.9",

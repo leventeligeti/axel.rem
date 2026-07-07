@@ -7,7 +7,7 @@ import logging
 
 import httpx
 
-from axel_shared import config
+from axel_rem import config
 
 log = logging.getLogger(__name__)
 

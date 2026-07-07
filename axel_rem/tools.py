@@ -3,7 +3,7 @@ import logging
 
 import psycopg2.extras
 
-from axel_shared.db import db
+from axel_rem.connection import db
 from axel_rem import redis_mem
 
 log = logging.getLogger(__name__)
