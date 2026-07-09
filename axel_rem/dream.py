@@ -8,6 +8,10 @@ Feladata:
   4. Strength decay
   5. Fontos memóriák boost-ja
   6. Long-term promóció — konszolidált új sor + embedding
+  7. Cognitive Reflex Decay — ha egy entitás N cikluson át sem stabilizálódik,
+     canonical ténnyé alakul: exempt a decay alól, további konszolidáció kizárva.
+     Inspired by InsomnAI 3.0 — Frész Ferenc
+     https://github.com/ferencfresz/insomnai_3.0
 """
 import json
 import logging
@@ -27,6 +31,12 @@ DREAM_HOUR = config.DREAM_HOUR
 PROMOTE_MIN_IMPORTANCE = 6
 PROMOTE_STRENGTH = 2.5
 PROMOTE_DEDUP_HOURS = 20
+
+# Cognitive Reflex Decay — Frész Ferenc (InsomnAI 3.0) ötlete alapján
+# https://github.com/ferencfresz/insomnai_3.0
+# Ha egy entitás ennyi dream cikluson át ismétlődik → canonical ténnyé válik.
+REFLEX_DECAY_THRESHOLD = 3
+CANONICAL_STRENGTH = 5.0
 
 
 class DreamScheduler:
@@ -122,11 +132,21 @@ class DreamScheduler:
             by_entity.setdefault(e, []).append(m)
 
         promoted = 0
+        canonical_skipped = 0
         for entity, mems in by_entity.items():
             if len(mems) < 2:
                 continue
+            # Cognitive Reflex Decay: canonical entitások kizárva a konszolidációból
+            if db.memory_has_canonical(agent, entity):
+                canonical_skipped += 1
+                log.debug("[DREAM] Canonical skip: %s/%s", agent, entity)
+                continue
             if self._process_cluster(agent, entity, mems):
                 promoted += 1
+
+        if canonical_skipped:
+            log.info("[DREAM] %s: %d canonical entitás kihagyva (Cognitive Reflex Decay)",
+                     agent, canonical_skipped)
 
         # Feldolgozottnak jelöljük a forrás sorokat
         db.tasks_mark_processed_bulk(task_ids_processed)
@@ -194,7 +214,22 @@ CSAK a JSON listát add vissza."""
         source_ref = f"dream://{today}/{entity.lower().replace(' ', '_')}"
 
         if db.dream_memory_exists(agent, entity, hours=PROMOTE_DEDUP_HOURS):
-            log.debug("[DREAM] Dedup: %s/%s már van — kihagyva", agent, entity)
+            # Cognitive Reflex Decay — Frész Ferenc (InsomnAI 3.0) ötlete alapján
+            # https://github.com/ferencfresz/insomnai_3.0
+            # Az entitás ismét visszatért — növeljük a számlálót.
+            # Ha eléri a küszöböt, canonical ténnyé válik: nem kapja a napi decay-t,
+            # és kizárjuk a jövőbeli konszolidációból.
+            new_count = db.memory_increment_dream_count(agent, entity)
+            if new_count >= REFLEX_DECAY_THRESHOLD:
+                affected = db.memory_mark_canonical(agent, entity, max_strength=CANONICAL_STRENGTH)
+                log.info(
+                    "[DREAM] Cognitive Reflex Decay: %s/%s → canonical "
+                    "(dream_count=%d, %d sor jelölve)",
+                    agent, entity, new_count, affected,
+                )
+            else:
+                log.debug("[DREAM] Dedup: %s/%s már van (dream_count=%d) — kihagyva",
+                          agent, entity, new_count)
             return False
 
         chunk = " | ".join(m["fact"] for m in source_mems[:5] if m.get("fact"))

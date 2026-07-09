@@ -114,12 +114,12 @@ def memory_boost(mem_id: int, delta: float = 0.1) -> None:
 
 
 def memory_decay_all(factor: float = 0.98) -> int:
-    """Napi decay — régi memóriák halványulnak."""
+    """Napi decay — régi memóriák halványulnak. Canonical memóriák exempt."""
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE axel_rem_memory SET strength = strength * %s "
-                "WHERE strength > 0.1",
+                "WHERE strength > 0.1 AND is_canonical = FALSE",
                 (factor,),
             )
             return cur.rowcount
@@ -192,6 +192,71 @@ def longterm_insert(entity: str, fact: str, chunk: str, source_ref: str,
                 )
             return cur.fetchone()[0]
 
+
+
+# ---------------------------------------------------------------------------
+# Cognitive Reflex Decay — Frész Ferenc (InsomnAI 3.0) ötlete alapján
+# https://github.com/ferencfresz/insomnai_3.0
+#
+# Ha egy entitás N egymást követő dream cikluson át sem stabilizálódik,
+# canonical ténnyé alakul: nem részesül decay-ben, további konszolidáció kizárva.
+# ---------------------------------------------------------------------------
+
+def memory_has_canonical(agent: str, entity: str) -> bool:
+    """True ha az entitáshoz már van canonical memória."""
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT 1 FROM axel_rem_memory
+                   WHERE agent = %s AND entity ILIKE %s AND is_canonical = TRUE
+                   LIMIT 1""",
+                (agent.upper(), entity),
+            )
+            return cur.fetchone() is not None
+
+
+def memory_get_dream_count(agent: str, entity: str) -> int:
+    """Visszaadja a legtöbb dream_count értéket az entity dream sorai közül."""
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT COALESCE(MAX(dream_count), 0)
+                   FROM axel_rem_memory
+                   WHERE agent = %s AND entity ILIKE %s AND source_type = 'dream'""",
+                (agent.upper(), entity),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+def memory_increment_dream_count(agent: str, entity: str) -> int:
+    """Növeli a dream_count-ot az entity összes dream során. Visszaadja az új max értéket."""
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE axel_rem_memory
+                   SET dream_count = dream_count + 1, updated_at = NOW()
+                   WHERE agent = %s AND entity ILIKE %s AND source_type = 'dream'
+                   RETURNING dream_count""",
+                (agent.upper(), entity),
+            )
+            rows = cur.fetchall()
+            return max((r[0] for r in rows), default=0)
+
+
+def memory_mark_canonical(agent: str, entity: str, max_strength: float = 5.0) -> int:
+    """Canonical jelölés — is_canonical=TRUE, strength=max. Visszaadja az érintett sorok számát."""
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE axel_rem_memory
+                   SET is_canonical = TRUE,
+                       strength = GREATEST(strength, %s),
+                       updated_at = NOW()
+                   WHERE agent = %s AND entity ILIKE %s AND source_type = 'dream'""",
+                (max_strength, agent.upper(), entity),
+            )
+            return cur.rowcount
 
 
 def tasks_get_recent(agent: str, hours: int = 26, limit: int = 60) -> list[dict]:
