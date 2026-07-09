@@ -68,7 +68,7 @@ class DreamScheduler:
 
     def _consolidate_agent(self, agent: str) -> int:
         # 1. Már feldolgozott memóriák (axel_rem_memory)
-        memories = db.memory_get_recent(agent=agent, hours=26, limit=80)
+        memories = db.memory_get_recent(agent=agent, hours=26, limit=300)
 
         # 2. Feldolgozatlan task-ok (axel_task rem_processed=FALSE)
         raw_tasks = db.tasks_get_unprocessed(agent=agent, limit=80)
@@ -174,7 +174,7 @@ CSAK a JSON listát add vissza."""
                 f"{config.LLM_URL}/v1/chat/completions",
                 headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
                 json={
-                    "model": "groq-llama",
+                    "model": config.LLM_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.2,
                     "max_tokens": 400,

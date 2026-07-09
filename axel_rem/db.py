@@ -337,10 +337,35 @@ def tasks_mark_processed_bulk(ids: list[int]) -> None:
             )
 
 
+def task_get_one_unprocessed() -> dict | None:
+    """Egyetlen feldolgozatlan, befejezett task — agent-agnosztikus."""
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT id, assigned_agent, description, result_summary, finished_at
+                   FROM axel_task
+                   WHERE status = 'DONE' AND rem_processed = FALSE
+                   ORDER BY finished_at ASC
+                   LIMIT 1""",
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def task_mark_processed(task_id: int) -> None:
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE axel_task SET rem_processed = TRUE WHERE id = %s",
+                (task_id,),
+            )
+
+
 def memory_insert_extracted(entity: str, fact: str, chunk: str, source_ref: str,
                             agent: str, embedding: list[float] | None,
-                            tags: list[str], strength: float = 1.0) -> int:
-    """Kozvetlen (mar feldolgozott) memoria sor irasa."""
+                            tags: list[str], strength: float = 1.0,
+                            source_type: str = "message") -> int:
+    """Közvetlen (már feldolgozott) memória sor írása."""
     with db() as conn:
         with conn.cursor() as cur:
             if embedding:
@@ -348,9 +373,9 @@ def memory_insert_extracted(entity: str, fact: str, chunk: str, source_ref: str,
                     """INSERT INTO axel_rem_memory
                        (entity, fact, chunk, source_type, source_ref, agent,
                         strength, embedding, tags, extracted)
-                       VALUES (%s, %s, %s, 'message', %s, %s, %s, %s::vector, %s, TRUE)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector, %s, TRUE)
                        RETURNING id""",
-                    (entity, fact, chunk, source_ref, agent.upper(),
+                    (entity, fact, chunk, source_type, source_ref, agent.upper(),
                      strength, embedding, tags),
                 )
             else:
@@ -358,9 +383,146 @@ def memory_insert_extracted(entity: str, fact: str, chunk: str, source_ref: str,
                     """INSERT INTO axel_rem_memory
                        (entity, fact, chunk, source_type, source_ref, agent,
                         strength, tags, extracted)
-                       VALUES (%s, %s, %s, 'message', %s, %s, %s, %s, TRUE)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE)
                        RETURNING id""",
-                    (entity, fact, chunk, source_ref, agent.upper(),
+                    (entity, fact, chunk, source_type, source_ref, agent.upper(),
                      strength, tags),
                 )
             return cur.fetchone()[0]
+
+
+# ── agent_thinking ────────────────────────────────────────────────────────────
+
+def thinking_insert(agent: str, topic: str, content: str,
+                    tags: list[str], embedding: list[float] | None) -> int:
+    """Gondolat rögzítése — mindig új sort ír, megőrzi az előző bejegyzéseket."""
+    with db() as conn:
+        with conn.cursor() as cur:
+            if embedding:
+                cur.execute(
+                    """INSERT INTO agent_thinking
+                           (agent, topic, content, tags, embedding)
+                       VALUES (%s, %s, %s, %s, %s::vector)
+                       RETURNING id""",
+                    (agent.upper(), topic, content, tags, embedding),
+                )
+            else:
+                cur.execute(
+                    """INSERT INTO agent_thinking
+                           (agent, topic, content, tags)
+                       VALUES (%s, %s, %s, %s)
+                       RETURNING id""",
+                    (agent.upper(), topic, content, tags),
+                )
+            return cur.fetchone()[0]
+
+
+def thinking_get_latest(agent: str, topic: str) -> dict | None:
+    """Egy topic legfrissebb bejegyzése."""
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT id, agent, topic, content, tags, updated_at
+                   FROM agent_thinking
+                   WHERE agent = %s AND topic ILIKE %s
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (agent.upper(), topic),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def thinking_get_history(agent: str, topic: str, limit: int = 10) -> list[dict]:
+    """Egy topic összes előzménye — legfrissebb elől."""
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT id, topic, content, tags, updated_at
+                   FROM agent_thinking
+                   WHERE agent = %s AND topic ILIKE %s
+                   ORDER BY updated_at DESC LIMIT %s""",
+                (agent.upper(), topic, limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def thinking_list(agent: str, limit: int = 20) -> list[dict]:
+    """Az agent összes topicja — topicnként a legfrissebb bejegyzés."""
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT DISTINCT ON (topic) topic,
+                          LEFT(content, 120) AS preview, tags, updated_at
+                   FROM agent_thinking WHERE agent = %s
+                   ORDER BY topic, updated_at DESC
+                   LIMIT %s""",
+                (agent.upper(), limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def thinking_search_text(agent: str, query: str, limit: int = 5) -> list[dict]:
+    """Szöveges keresés — topicnként a legfrissebb egyező bejegyzés."""
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT DISTINCT ON (topic) topic, content, tags, updated_at
+                   FROM agent_thinking
+                   WHERE agent = %s AND (topic ILIKE %s OR content ILIKE %s)
+                   ORDER BY topic, updated_at DESC
+                   LIMIT %s""",
+                (agent.upper(), f"%{query}%", f"%{query}%", limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def thinking_search_vector(agent: str, embedding: list[float],
+                           limit: int = 5) -> list[dict]:
+    """Szemantikus keresés — legfrissebb bejegyzések alapján."""
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT DISTINCT ON (topic) topic, content, tags, updated_at,
+                          1 - (embedding <=> %s::vector) AS similarity
+                   FROM agent_thinking
+                   WHERE agent = %s AND embedding IS NOT NULL
+                   ORDER BY topic, updated_at DESC, embedding <=> %s::vector
+                   LIMIT %s""",
+                (embedding, agent.upper(), embedding, limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def thinking_get_unprocessed(limit: int = 10) -> list[dict]:
+    """agent_thinking sorok ahol rem_processed=FALSE — embedding generáláshoz."""
+    with db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT id, agent, topic, content, tags
+                   FROM agent_thinking
+                   WHERE rem_processed = FALSE
+                   ORDER BY created_at ASC
+                   LIMIT %s""",
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def thinking_mark_processed(thinking_id: int, embedding: list[float] | None = None) -> None:
+    """rem_processed=TRUE, opcionálisan embedding frissítés."""
+    with db() as conn:
+        with conn.cursor() as cur:
+            if embedding:
+                cur.execute(
+                    """UPDATE agent_thinking
+                       SET rem_processed = TRUE, embedding = %s::vector, updated_at = NOW()
+                       WHERE id = %s""",
+                    (embedding, thinking_id),
+                )
+            else:
+                cur.execute(
+                    """UPDATE agent_thinking
+                       SET rem_processed = TRUE, updated_at = NOW()
+                       WHERE id = %s""",
+                    (thinking_id,),
+                )
